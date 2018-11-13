@@ -724,11 +724,10 @@ for nel in range(0,maxnel):
 	print("elapsed time: {} s".format(time.time() - starttime))
 	print("-------------------------------------------------")
 
-	scipy.io.savemat('Output_electronlog.mat', {'shotel':shotelectrons_temp,'sputtering_list':sputteringevents,'displacementthreshold':dispthresh,'high_tension':HT,'element1':"Au",'element2':"Ni",'Startcoordsel1':startcoords1,'Startcoordsel2':startcoords2,'Substratecoords':coordssub,'lammpsindicesel1':startindices1,'lammpsindicesel2':startindices2},'coordnoNN11':coordsNN11,'coordnoNN12':coordsNN12,'coordnoNN21':coordsNN21,'coordnoNN22':coordsNN22)
+	scipy.io.savemat('Output_electronlog.mat', {'shotel':shotelectrons_temp,'sputtering_list':sputteringevents,'displacementthreshold':dispthresh,'high_tension':HT,'element1':"Au",'element2':"Ni",'Startcoordsel1':startcoords1,'Startcoordsel2':startcoords2,'Substratecoords':coordssub,'lammpsindicesel1':startindices1,'lammpsindicesel2':startindices2,'coordnoNN11':coordsNN11,'coordnoNN12':coordsNN12,'coordnoNN21':coordsNN21,'coordnoNN22':coordsNN22})
 	
-	#scipy.io.savemat('Output_electronlog.mat', {'shotel':shotelectrons_temp})
-	#with open('Output_electronlog.mat','ab') as f:
-	#	scipy.io.savemat(f, {'sputtering_list':sputteringevents,'displacementthreshold':dispthresh,'high_tension':HT,'element1':"Au",'element2':"Ni"})
+	if math.fmod(nel,100)==0:
+		copyfile('Output_electronlog.mat', 'Output_electronlog_backup.mat')
 	
 L.close()
 MPI.Finalize()
