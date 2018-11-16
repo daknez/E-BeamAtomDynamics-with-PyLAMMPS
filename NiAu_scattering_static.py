@@ -208,6 +208,17 @@ def calccoordNN(coords1,coords2, NNthresh):
 	
 	return countNN11, countNN12, countNN21, countNN22
 					
+#def printMemVariables():
+import sys
+def sizeof_fmt(num, suffix='B'):
+	# after https://stackoverflow.com/a/1094933/1870254 and https://stackoverflow.com/questions/24455615/python-how-to-display-size-of-all-variables
+	
+	for unit in ['','Ki','Mi','Gi','Ti','Pi','Ei','Zi']:
+		if abs(num) < 1024.0:
+			return "%3.1f%s%s" % (num, unit, suffix)
+		num /= 1024.0
+	return "%.1f%s%s" % (num, 'Yi', suffix)
+
 # important parameters:
 Temp = 300.0
 xNi = 0.3
@@ -217,6 +228,7 @@ maxnel = 1000000;
 
 # if larger than 0 a full xyz time series is written to a file every fullsavedata-ths step
 fullsavedata = 0
+savealldisplacements = True	# save a full list of all displacements after each experiment
 
 # time spans for scattering simulation in ps:
 initequalt = 1					# initial equilibration time between velocity reset and new scattering event
@@ -385,8 +397,9 @@ if continueprevsim == False:
 	# Set thermo output to log file
 	# L.thermo_style("custom","step","atoms","temp","etotal","pe","ke","dt")  
 	# L.thermo(100)
-
-	L.thermo_modify("lost","ignore","flush","yes")
+	#L.thermo_modify("lost","ignore","flush","yes")
+	L.echo("none")
+	
 	L.velocity("all","create",Temp,12345,"dist","gaussian","mom","yes","rot","yes")
 
 	#L.fix("thermofix","all","temp/csvr",Temp,Temp,0.1,12345)	# does not perform time integration !
@@ -404,14 +417,8 @@ if continueprevsim == False:
 	L.unfix("nveintegration")	# remove time integration fix
 	L.unfix("thermofix1")
 	
-	# Test Atom selection:
-	# atom = 1
-	# current_atomID = L.atoms[atom].id
-	# current_atom_handle = L.atoms[atom]
-	# L.group("selected","id","value",current_atomID)
-	# L.velocity("selected","set",newv[0],newv[1],newv[2],"units","box")
-		
-	L.fix("thermofix","clustergr","langevin",500,500,0.1, 12345,"zero","yes") # does not perform time integration !
+	L.velocity("all","create",Temp,12345,"dist","gaussian","mom","yes","rot","yes")
+	L.fix("thermofix","clustergr","langevin",Temp,Temp,0.1, 12345,"zero","yes") # does not perform time integration !
 	L.fix("nveintegration","clustergr","nve")	# move only cluster atoms
 	L.timestep(0.002)
 	starttime = time.time()
@@ -473,6 +480,7 @@ L.undump("Startgeom")
 
 shotelectrons_temp = np.zeros((8, maxnel))
 sputteringevents = np.zeros((6, maxnel))
+alldisplacements = np.zeros((nPart1+nPart2, maxnel))
 
 for nel in range(0,maxnel):
 
@@ -498,6 +506,27 @@ for nel in range(0,maxnel):
 	L.unfix("nveintegration")
 	L.group("clustergr","delete")
 	L.group("allintegrategr","delete")
+	
+	if math.fmod(nel,1000)==0:	# Workaround to prevent memory overflow during long simulations
+		#L.clear()	# doesn't help
+		L.close()
+		lmp = lammps()
+		L = PyLammps(ptr=lmp)
+		L.read_restart("restart.equil")
+		
+		L.pair_style("hybrid","eam/alloy","lj/cut",10.0,"tersoff")
+		L.pair_coeff("* * eam/alloy NiAu_Zhou.eam.alloy Au Ni NULL")
+		L.pair_coeff(1,3,"lj/cut",epsAuC,sigAuC,10.0)
+		L.pair_coeff(2,3,"lj/cut",epsNiC,sigNiC,10.0)
+		L.pair_coeff("* *","tersoff","SiC.tersoff","NULL NULL C")
+		
+		L.compute("K","all","ke/atom")
+		L.compute("P","all","pe/atom")
+		L.compute("coordno","all","coord/atom","cutoff",NNthresh)	# calculate coordination no between all atoms of type 1 or 2 (exclude substrate atoms (type 3)
+		print("LAMMPS environment restarted...")
+		for name, size in sorted(((name, sys.getsizeof(value)) for name,value in locals().items()), key= lambda x: -x[1])[:10]:
+			print("{:>30}: {:>8}".format(name,sizeof_fmt(size)))
+		
 	L.group("clustergr","type",1,2)		# Select all Au and Ni atoms and add them to the cluster group
 	L.group("allintegrategr","union","clustergr","substinteggr") # recreate group for integration
 	# L.velocity("clustergr","create",Temp,12345,"dist","gaussian","loop","geom")	# recreate velocities
@@ -595,7 +624,6 @@ for nel in range(0,maxnel):
 	#L.atoms[atomid].velocities = (newv[0],newv[1],newv[2])	# andere Variante, funkt aber nicht Befehl wird ignoriert ?
 	L.group("selected","delete")
 	
-	
 	shotelectrons_temp[0,nel] = atomid
 	shotelectrons_temp[1,nel] = E_t
 	shotelectrons_temp[4,nel] = theta
@@ -627,8 +655,8 @@ for nel in range(0,maxnel):
 		# Fix according to periodic boundary conditions
 		# Distance vector should be in the range -hLx -> hLx and -hLy -> hLy
 		# Therefore, we need to apply the following changes if it's not in this range: 
-		# Calculate the half box size in each direction
-		hL = Lsub/2
+		
+		hL = Lsub/2	# Calculate the half box size in each direction
 		for dim in range(0,2):
 			for part in range(0,nPart1 + nPart2-1):
 				if dr[part][dim] > hL:
@@ -664,21 +692,28 @@ for nel in range(0,maxnel):
 				print("displacement confirmed, equilibration...")
 				displacement = True
 				nodispl += 1
-			
-				shotelectrons_temp[2,nel] = drsorted[-1]	
+				sortedindices = np.argsort(dr)
+				shotelectrons_temp[2,nel] = drsorted[-1]
 				#shotelectrons_temp[3,nel] = index;
+				#displacedatoms[0:9,nel] = sortedindices[-11:-1]
+				#displacedatoms[10:19,nel] = drsorrted[-11:-1]
+				
 				if resetgeom == False:
 					L.run(400)
 					#L.fix("thermalize","clustergr","temp/csvr",Temp,Temp,0.1, 12345)
 					#L.run(int(round(equilibrationt/L.eval("dt"))))	
 					#thermalize(Temp)
 					#L.unfix("thermalize")
-					
+
 					#print("velocity after equilibration: {}".format(current_atom_handle.velocity))
+					if savealldisplacements == True:
+						(nPart1, nPart2, nPartsub, coords1, coords2, coordssub,indices1,indices2,indicessub) = getcoords()
+						clustercoords = np.append(coords1,coords2,axis=0)
 			else:
 				print("displacement not confirmed")
 		else:
 			print("no displacement found.")
+		
 	else:
 		print("sputter event detected, equilibration...")
 		displacement = True
@@ -696,11 +731,14 @@ for nel in range(0,maxnel):
 			#L.run(int(round(equilibrationt/L.eval("dt"))))	
 			#thermalize(Temp)
 			#L.unfix("thermalize")
-			
 			#print("velocity after equilibration: {}".format(current_atom_handle.velocity))
 
 	print("T after equilibration: {} K; dt after equilibration: {} fs".format(L.eval("temp"),L.eval("dt")*1000))
 	print("potential energy: {} eV, kinetic energy: {}".format(L.eval("pe"),L.eval("ke")))
+	
+	if savealldisplacements == True:
+		# save all displacements after experiment:
+		alldisplacements[:,nel] = np.absolute(LA.norm(initialcoords - clustercoords, axis=1))
 
 	#forces = L.extract_atom("forces",3)      	# lmp.extract_atom(name,type) 
 										# extract a per-atom quantity
@@ -731,10 +769,14 @@ for nel in range(0,maxnel):
 	print("elapsed time: {} s".format(time.time() - starttime))
 	print("-------------------------------------------------")
 	
-	scipy.io.savemat('Output_electronlog.mat', {'shotel':shotelectrons_temp,'sputtering_list':sputteringevents,'displacementthreshold':dispthresh,'high_tension':HT,'element1':"Au",'element2':"Ni",'Startcoordsel1':startcoords1,'Startcoordsel2':startcoords2,'Substratecoords':coordssub,'lammpsindicesel1':startindices1,'lammpsindicesel2':startindices2,'coordnoNN11':coordsNN11,'coordnoNN12':coordsNN12,'coordnoNN21':coordsNN21,'coordnoNN22':coordsNN22})
+	if math.fmod(nel,1000)==0:
+		if savealldisplacements == True:
+			scipy.io.savemat('Output_electronlog.mat', {'shotel':shotelectrons_temp,'sputtering_list':sputteringevents,'displacementthreshold':dispthresh,'high_tension':HT,'element1':"Au",'element2':"Ni",'Startcoordsel1':startcoords1,'Startcoordsel2':startcoords2,'Substratecoords':coordssub,'lammpsindicesel1':startindices1,'lammpsindicesel2':startindices2,'coordnoNN11':coordsNN11,'coordnoNN12':coordsNN12,'coordnoNN21':coordsNN21,'coordnoNN22':coordsNN22,'alldisplacements':alldisplacements})
+		else:
+			scipy.io.savemat('Output_electronlog.mat', {'shotel':shotelectrons_temp,'sputtering_list':sputteringevents,'displacementthreshold':dispthresh,'high_tension':HT,'element1':"Au",'element2':"Ni",'Startcoordsel1':startcoords1,'Startcoordsel2':startcoords2,'Substratecoords':coordssub,'lammpsindicesel1':startindices1,'lammpsindicesel2':startindices2,'coordnoNN11':coordsNN11,'coordnoNN12':coordsNN12,'coordnoNN21':coordsNN21,'coordnoNN22':coordsNN22})
 	
-	if math.fmod(nel,100)==0:
+	if math.fmod(nel,10000)==0:	# create backup
 		copyfile('Output_electronlog.mat', 'Output_electronlog_backup.mat')
-	
+		
 L.close()
 MPI.Finalize()
